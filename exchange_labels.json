@@ -16,5 +16,19 @@
     "type": "Centralized Exchange",
     "country": "Demo",
     "label_source": "CryptoShield Demo Registry"
+  },
+
+  "0x28c6c06298d514db089934071355e5743bf21d60": {
+    "name": "Binance 14",
+    "type": "Centralized Exchange / VASP",
+    "country": "Global",
+    "label_source": "Public blockchain address attribution"
+  },
+
+  "0x503828976d22510aad0201ac7ec88293211d23da": {
+    "name": "Coinbase 2",
+    "type": "Centralized Exchange / VASP",
+    "country": "United States",
+    "label_source": "Public blockchain address attribution"
   }
 }
