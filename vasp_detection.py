@@ -1,625 +1,388 @@
 import json
 import os
+from typing import Any, Dict, List, Optional
 
 
-# ============================================================
-# CRYPTOSHIELD - VASP DETECTION
-# ============================================================
-#
-# Detects potential associations between traced blockchain
-# addresses and known / labelled VASP addresses.
-#
-# IMPORTANT:
-# A blockchain address label is an analytical indicator.
-# It does NOT prove ownership, control, or criminal activity.
-#
-# ============================================================
+LABEL_FILE = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "exchange_labels.json"
+)
 
 
-# ------------------------------------------------------------
-# Default demo registry
-# ------------------------------------------------------------
-
-VASP_REGISTRY = {
-
-    # Demo addresses only.
-    # Replace / extend these with properly sourced labels.
-
-    "0x1111111111111111111111111111111111111111": {
-        "name": "Demo Exchange Alpha",
-        "type": "Centralized Exchange",
-        "country": "Demo",
-        "source": "CryptoShield Demo Registry"
-    },
-
-    "0x2222222222222222222222222222222222222222": {
-        "name": "Demo Exchange Beta",
-        "type": "Centralized Exchange",
-        "country": "Demo",
-        "source": "CryptoShield Demo Registry"
-    },
-
-    "0x3333333333333333333333333333333333333333": {
-        "name": "Demo VASP Gamma",
-        "type": "VASP",
-        "country": "Demo",
-        "source": "CryptoShield Demo Registry"
-    }
-
-}
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def normalize_address(address):
-
+def normalize_address(address: Any) -> str:
+    """
+    Normalize an Ethereum-style address for reliable comparison.
+    """
     if not address:
         return ""
 
     return str(address).strip().lower()
 
 
-def load_registry(
-    registry=None,
-    registry_file=None
-):
+def load_exchange_labels(
+    labels_file: Optional[str] = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Load the curated VASP/exchange address registry.
+    """
 
-    # --------------------------------------------------------
-    # Custom registry supplied directly
-    # --------------------------------------------------------
+    path = labels_file or LABEL_FILE
 
-    if isinstance(
-        registry,
-        dict
-    ):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
 
-        return {
+        if not isinstance(raw, dict):
+            return {}
 
-            normalize_address(
-                address
-            ): details
+        normalized = {}
 
-            for address, details
-            in registry.items()
+        for address, info in raw.items():
 
-        }
+            normalized_address = normalize_address(address)
 
+            if not normalized_address:
+                continue
 
-    # --------------------------------------------------------
-    # Load external JSON registry
-    # --------------------------------------------------------
+            if not isinstance(info, dict):
+                continue
 
-    if registry_file:
+            normalized[normalized_address] = info
 
-        try:
+        return normalized
 
-            if os.path.exists(
-                registry_file
-            ):
+    except FileNotFoundError:
+        return {}
 
-                with open(
-                    registry_file,
-                    "r",
-                    encoding="utf-8"
-                ) as file:
+    except json.JSONDecodeError:
+        return {}
 
-                    data = json.load(
-                        file
-                    )
 
+def _extract_addresses_from_transaction(tx: Dict[str, Any]) -> List[str]:
+    """
+    Extract possible wallet addresses from a transaction.
 
-                if isinstance(
-                    data,
-                    dict
-                ):
+    Supports different field names because live blockchain APIs
+    may return slightly different structures.
+    """
 
-                    return {
+    addresses = []
 
-                        normalize_address(
-                            address
-                        ): details
+    possible_fields = [
+        "from",
+        "to",
+        "from_address",
+        "to_address",
+        "sender",
+        "receiver",
+        "wallet",
+        "address"
+    ]
 
-                        for address, details
-                        in data.items()
+    for field in possible_fields:
 
-                    }
+        value = tx.get(field)
 
-        except Exception:
+        if isinstance(value, str) and value.strip():
+            addresses.append(value)
 
-            pass
+    # Some transaction structures may contain nested address objects.
+    for field in ["from", "to"]:
 
+        value = tx.get(field)
 
-    # --------------------------------------------------------
-    # Default registry
-    # --------------------------------------------------------
+        if isinstance(value, dict):
 
-    return VASP_REGISTRY.copy()
+            for nested_field in ["address", "hash", "value"]:
 
+                nested_value = value.get(nested_field)
 
-# ============================================================
-# TRANSACTION PARTICIPANTS
-# ============================================================
+                if isinstance(nested_value, str):
+                    addresses.append(nested_value)
 
-def extract_participants(
-    transactions
-):
+    return addresses
 
-    participants = set()
 
+def _get_transaction_hop(
+    tx: Dict[str, Any],
+    start_wallet: str = ""
+) -> Optional[int]:
 
-    for tx in transactions:
+    for field in [
+        "hop",
+        "wallet_hop",
+        "depth",
+        "trace_depth",
+        "max_hop"
+    ]:
 
-        sender = normalize_address(
-            tx.get(
-                "from",
-                ""
-            )
-        )
+        value = tx.get(field)
 
-        receiver = normalize_address(
-            tx.get(
-                "to",
-                ""
-            )
-        )
+        if isinstance(value, int):
+            return value
 
-
-        if sender:
-
-            participants.add(
-                sender
-            )
-
-
-        if receiver:
-
-            participants.add(
-                receiver
-            )
-
-
-    return participants
-
-
-# ============================================================
-# GET TRANSACTION ROLE
-# ============================================================
-
-def get_transaction_role(
-    address,
-    transactions
-):
-
-    address = normalize_address(
-        address
-    )
-
-
-    incoming = 0
-    outgoing = 0
-
-
-    for tx in transactions:
-
-        sender = normalize_address(
-            tx.get(
-                "from",
-                ""
-            )
-        )
-
-        receiver = normalize_address(
-            tx.get(
-                "to",
-                ""
-            )
-        )
-
-
-        if receiver == address:
-
-            incoming += 1
-
-
-        if sender == address:
-
-            outgoing += 1
-
-
-    if incoming > 0 and outgoing > 0:
-
-        return "Sender + Receiver"
-
-    if incoming > 0:
-
-        return "Receiver"
-
-    if outgoing > 0:
-
-        return "Sender"
-
-
-    return "Participant"
-
-
-# ============================================================
-# FIND HOP
-# ============================================================
-
-def find_address_hop(
-    address,
-    transactions,
-    wallet_hops=None
-):
-
-    address = normalize_address(
-        address
-    )
-
-
-    # --------------------------------------------------------
-    # Use supplied hop information
-    # --------------------------------------------------------
-
-    if isinstance(
-        wallet_hops,
-        dict
-    ):
-
-        value = wallet_hops.get(
-            address
-        )
-
-        if value is not None:
+        if isinstance(value, str):
 
             try:
+                return int(value)
 
-                return int(
-                    value
-                )
-
-            except Exception:
-
+            except ValueError:
                 pass
-
-
-    # --------------------------------------------------------
-    # Try transaction metadata
-    # --------------------------------------------------------
-
-    hops = []
-
-
-    for tx in transactions:
-
-        sender = normalize_address(
-            tx.get(
-                "from",
-                ""
-            )
-        )
-
-        receiver = normalize_address(
-            tx.get(
-                "to",
-                ""
-            )
-        )
-
-
-        if sender == address:
-
-            if tx.get(
-                "hop"
-            ) is not None:
-
-                hops.append(
-                    tx.get(
-                        "hop"
-                    )
-                )
-
-
-        if receiver == address:
-
-            if tx.get(
-                "hop"
-            ) is not None:
-
-                hops.append(
-                    tx.get(
-                        "hop"
-                    )
-                )
-
-
-    if hops:
-
-        try:
-
-            return min(
-                int(hop)
-                for hop in hops
-            )
-
-        except Exception:
-
-            pass
-
 
     return None
 
 
-# ============================================================
-# MATCH VASP ADDRESSES
-# ============================================================
+def detect_known_vasps(
+    transactions: List[Dict[str, Any]],
+    start_wallet: str = "",
+    labels_file: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Detect known VASP/exchange endpoints from:
 
-def detect_vasp(
-    transactions,
-    wallet_hops=None,
-    registry=None,
-    registry_file=None
-):
+    1. The reported wallet itself
+    2. Transaction sender addresses
+    3. Transaction receiver addresses
 
-    if not transactions:
+    Matching is case-insensitive.
 
+    IMPORTANT:
+    This does NOT prove ownership of an individual or account.
+    It only identifies an address that matches the curated
+    public VASP/exchange registry.
+    """
+
+    labels = load_exchange_labels(labels_file)
+
+    if not labels:
         return []
 
+    start = normalize_address(start_wallet)
 
-    registry = load_registry(
-        registry=registry,
-        registry_file=registry_file
-    )
+    results = {}
 
+    # ---------------------------------------------------------
+    # 1. CHECK THE REPORTED WALLET ITSELF
+    # ---------------------------------------------------------
 
-    participants = (
-        extract_participants(
-            transactions
+    if start and start in labels:
+
+        info = labels[start]
+
+        results[start] = {
+            "address": start,
+            "name": info.get("name", "Unknown VASP"),
+            "type": info.get(
+                "type",
+                "Centralized Exchange / VASP"
+            ),
+            "country": info.get(
+                "country",
+                "Unknown"
+            ),
+            "source": info.get(
+                "label_source",
+                "CryptoShield VASP Registry"
+            ),
+            "role": "Reported wallet",
+            "hop": 0,
+            "confidence": "High",
+            "evidence": (
+                "The reported wallet directly matches "
+                "a curated VASP/exchange address."
+            ),
+            "kyc_note": (
+                "Any identity or account information must be "
+                "requested from the VASP through applicable "
+                "authority and legal process."
+            )
+        }
+
+    # ---------------------------------------------------------
+    # 2. CHECK TRANSACTION PARTICIPANTS
+    # ---------------------------------------------------------
+
+    for tx in transactions or []:
+
+        tx_addresses = _extract_addresses_from_transaction(tx)
+
+        hop = _get_transaction_hop(
+            tx,
+            start_wallet=start_wallet
         )
-    )
 
-
-    matches = []
-
-
-    for address in participants:
-
-        if address not in registry:
-
-            continue
-
-
-        details = registry.get(
-            address,
-            {}
+        tx_hash = (
+            tx.get("hash")
+            or tx.get("tx_hash")
+            or tx.get("transaction_hash")
+            or ""
         )
 
+        for address in tx_addresses:
 
-        if not isinstance(
-            details,
-            dict
-        ):
+            normalized = normalize_address(address)
 
-            details = {}
+            if not normalized:
+                continue
 
+            if normalized not in labels:
+                continue
 
-        hop = find_address_hop(
-            address,
-            transactions,
-            wallet_hops
-        )
+            info = labels[normalized]
 
+            # Don't overwrite a stronger/root match.
+            if normalized in results:
+                continue
 
-        role = get_transaction_role(
-            address,
-            transactions
-        )
-
-
-        match = {
-
-            "address":
-                address,
-
-            "name":
-                details.get(
+            results[normalized] = {
+                "address": normalized,
+                "name": info.get(
                     "name",
                     "Unknown VASP"
                 ),
-
-            "type":
-                details.get(
+                "type": info.get(
                     "type",
-                    "VASP"
+                    "Centralized Exchange / VASP"
                 ),
-
-            "country":
-                details.get(
+                "country": info.get(
                     "country",
                     "Unknown"
                 ),
-
-            "source":
-                details.get(
-                    "source",
-                    "Unknown"
+                "source": info.get(
+                    "label_source",
+                    "CryptoShield VASP Registry"
                 ),
-
-            "role":
-                role,
-
-            "hop":
-                hop,
-
-            "confidence":
-                "Potential association",
-
-            "evidence":
-                "Traced transaction participant matched a labelled VASP address",
-
-            "kyc_note":
-                (
-                    "The VASP may hold off-chain customer information. "
-                    "Authorized investigators can follow applicable legal "
-                    "procedures to request relevant KYC/account information."
+                "role": "Transaction participant",
+                "hop": hop,
+                "confidence": "High",
+                "evidence": (
+                    "A transaction participant matches "
+                    "a curated VASP/exchange address."
+                ),
+                "transaction_hash": tx_hash,
+                "kyc_note": (
+                    "Any identity or account information must be "
+                    "requested from the VASP through applicable "
+                    "authority and legal process."
                 )
+            }
 
-        }
-
-
-        matches.append(
-            match
-        )
+    return list(results.values())
 
 
-    # --------------------------------------------------------
-    # Sort by hop
-    # --------------------------------------------------------
+def find_vasp_for_wallet(
+    wallet_address: str,
+    labels_file: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
+    """
+    Directly check whether one wallet is present in the
+    curated VASP registry.
+    """
 
-    matches.sort(
+    labels = load_exchange_labels(labels_file)
 
-        key=lambda item: (
-            item.get(
-                "hop"
-            )
-            if item.get(
-                "hop"
-            ) is not None
-            else 999
-        )
+    normalized = normalize_address(wallet_address)
 
-    )
+    if not normalized:
+        return None
 
+    info = labels.get(normalized)
 
-    return matches
-
-
-# ============================================================
-# VASP SUMMARY
-# ============================================================
-
-def summarize_vasp(
-    matches
-):
-
-    if not matches:
-
-        return {
-
-            "found":
-                False,
-
-            "count":
-                0,
-
-            "vasps":
-                [],
-
-            "message":
-                (
-                    "No labelled VASP association was found "
-                    "in the analysed transaction set."
-                )
-
-        }
-
-
-    names = []
-
-    types = []
-
-    countries = []
-
-
-    for item in matches:
-
-        name = item.get(
-            "name"
-        )
-
-        vasp_type = item.get(
-            "type"
-        )
-
-        country = item.get(
-            "country"
-        )
-
-
-        if name and name not in names:
-
-            names.append(
-                name
-            )
-
-
-        if (
-            vasp_type
-            and vasp_type not in types
-        ):
-
-            types.append(
-                vasp_type
-            )
-
-
-        if (
-            country
-            and country not in countries
-        ):
-
-            countries.append(
-                country
-            )
-
+    if not info:
+        return None
 
     return {
-
-        "found":
-            True,
-
-        "count":
-            len(matches),
-
-        "vasps":
-            names,
-
-        "types":
-            types,
-
-        "countries":
-            countries,
-
-        "message":
-            (
-                "Potential VASP association detected "
-                "from labelled blockchain address participation."
-            )
-
+        "address": normalized,
+        "name": info.get(
+            "name",
+            "Unknown VASP"
+        ),
+        "type": info.get(
+            "type",
+            "Centralized Exchange / VASP"
+        ),
+        "country": info.get(
+            "country",
+            "Unknown"
+        ),
+        "source": info.get(
+            "label_source",
+            "CryptoShield VASP Registry"
+        ),
+        "role": "Direct wallet match",
+        "hop": 0,
+        "confidence": "High",
+        "evidence": (
+            "Wallet directly matches the curated "
+            "VASP/exchange registry."
+        )
     }
 
 
-# ============================================================
-# COMPATIBILITY ALIASES
-# ============================================================
+def get_vasp_summary(
+    vasps: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """
+    Create a simple summary for the Streamlit UI.
+    """
 
-def detect_vasp_association(
-    transactions,
-    wallet_hops=None
-):
+    if not vasps:
 
-    return detect_vasp(
-        transactions,
-        wallet_hops=wallet_hops
+        return {
+            "found": False,
+            "count": 0,
+            "primary": None,
+            "message": (
+                "No known VASP endpoint was found "
+                "in the current public attribution registry."
+            )
+        }
+
+    # Prefer direct reported-wallet match.
+    direct_matches = [
+        v for v in vasps
+        if v.get("hop") == 0
+    ]
+
+    primary = (
+        direct_matches[0]
+        if direct_matches
+        else vasps[0]
     )
 
+    return {
+        "found": True,
+        "count": len(vasps),
+        "primary": primary,
+        "message": (
+            f"Known VASP endpoint identified: "
+            f"{primary.get('name', 'Unknown')}"
+        )
+    }
 
-def find_vasp(
-    transactions
-):
 
-    return detect_vasp(
-        transactions
+def explain_vasp_match(
+    vasp: Dict[str, Any]
+) -> str:
+    """
+    Human-readable explanation for the UI.
+    """
+
+    name = vasp.get("name", "Unknown VASP")
+    address = vasp.get("address", "")
+    source = vasp.get("source", "Registry")
+    hop = vasp.get("hop")
+
+    if hop is None:
+        hop_text = "Unknown"
+    else:
+        hop_text = str(hop)
+
+    return (
+        f"{name} was identified because address "
+        f"{address} matches the CryptoShield VASP registry. "
+        f"Trace hop: {hop_text}. "
+        f"Attribution source: {source}. "
+        f"This is an investigative endpoint attribution, "
+        f"not proof of a person's identity or ownership."
     )
